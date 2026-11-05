@@ -7,33 +7,40 @@ import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
+import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
-import androidx.glance.Button
+import androidx.glance.Image
+import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.actionParametersOf
-import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.action.clickable
-import androidx.glance.GlanceModifier as GModifier
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.action.actionStartActivity
+import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.appwidget.updateAll
+import androidx.glance.background
+import androidx.glance.color.DynamicThemeColorProviders
 import androidx.glance.layout.Alignment
-import androidx.glance.layout.Column
+import androidx.glance.layout.Box
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
+import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
-import androidx.glance.layout.fillMaxWidth
-import androidx.glance.layout.height
 import androidx.glance.layout.padding
+import androidx.glance.layout.size
 import androidx.glance.layout.width
+import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import com.vibefinancer.app.R
 import com.vibefinancer.app.data.ApiResult
 import com.vibefinancer.app.data.FinancerRepository
 import com.vibefinancer.app.data.SessionStore
@@ -69,7 +76,7 @@ class BalanceWidget : GlanceAppWidget() {
         val accountId = store.widgetAccountId()
         val cache = store.widgetCache()?.split("|")
         provideContent {
-            GlanceTheme {
+            GlanceTheme(DynamicThemeColorProviders) {
                 WidgetContent(
                     accountName = cache?.getOrNull(0) ?: "VibeFinancer",
                     balanceText = if (cache != null && cache.size >= 3) {
@@ -95,39 +102,54 @@ class BalanceWidget : GlanceAppWidget() {
                 }
             )
         }
-        Column(
-            modifier = GModifier
-                .fillMaxSize()
-                .padding(8.dp)
-                .let { m -> if (openForm != null) m.clickable(openForm) else m },
+        Row(
+            modifier = GlanceModifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
-                modifier = GModifier.fillMaxWidth(),
+                modifier = GlanceModifier
+                    .fillMaxHeight()
+                    .background(GlanceTheme.colors.primaryContainer)
+                    .cornerRadius(16.dp)
+                    .padding(horizontal = 12.dp)
+                    .let { m -> if (openForm != null) m.clickable(openForm) else m },
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = GModifier.defaultWeight()) {
-                    Text(
-                        accountName,
-                        style = TextStyle(fontSize = 12.sp),
-                        maxLines = 1
-                    )
-                    if (balanceText != null) {
-                        Text(
-                            balanceText,
-                            style = TextStyle(fontSize = 20.sp),
-                            maxLines = 1
+                Text(
+                    accountName,
+                    style = TextStyle(color = GlanceTheme.colors.onPrimaryContainer, fontSize = 11.sp),
+                    maxLines = 1
+                )
+                Spacer(GlanceModifier.width(8.dp))
+                Text(
+                    balanceText ?: "Open the app to pick an account",
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onPrimaryContainer,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    maxLines = 1
+                )
+            }
+            Spacer(GlanceModifier.defaultWeight())
+            Box(
+                modifier = GlanceModifier
+                    .fillMaxHeight()
+                    .width(44.dp)
+                    .background(GlanceTheme.colors.primary)
+                    .cornerRadius(16.dp)
+                    .clickable(
+                        actionRunCallback<RefreshAction>(
+                            actionParametersOf(AccountKey to (accountId ?: ""))
                         )
-                    } else {
-                        Text("Open the app to pick an account", style = TextStyle(fontSize = 13.sp))
-                    }
-                }
-                Spacer(GModifier.width(8.dp))
-                Button(
-                    text = "Refresh",
-                    onClick = actionRunCallback<RefreshAction>(
-                        actionParametersOf(AccountKey to (accountId ?: ""))
-                    )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    provider = ImageProvider(R.drawable.ic_refresh),
+                    contentDescription = "Refresh",
+                    colorFilter = ColorFilter.tint(GlanceTheme.colors.onPrimary),
+                    modifier = GlanceModifier.size(18.dp)
                 )
             }
         }

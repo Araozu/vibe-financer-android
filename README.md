@@ -17,9 +17,10 @@ dynamic colors. minSdk 35 (Android 15), targetSdk 36 (Android 16).
     and upcoming transactions (`GET /api/transactions`)
   - Savings goal card for the account that has a goal
 - Settings: server URL, widget account picker, sign out
-- Home-screen widget: shows the selected account's balance, tap opens the
-  new-transaction form (`vibefinancer://new-transaction?accountId=…`),
-  Refresh button re-fetches the balance
+- Home-screen widget (full width): account name and balance on a pill, then a
+  Refresh button that re-fetches the balance. Tapping the pill opens the
+  new-transaction form (`vibefinancer://new-transaction?accountId=…`). Colors come
+  from the Material You scheme
 
 Colors come from the Material You scheme, so the app re-themes with the wallpaper.
 
