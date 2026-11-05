@@ -29,6 +29,7 @@ grouped by day, and the savings goal card.
 - `ui/BalanceOverviewChart.kt` — multi-line Canvas chart and account legend.
 - `ui/TxnFormScreen.kt` — `TransactionForm` (shared by the dashboard and the deep-link screen).
 - `widget/BalanceWidget.kt` — Glance widget; tap opens `vibefinancer://new-transaction?accountId=…`.
+- Launcher icon — `res/mipmap-anydpi-v26/ic_launcher*.xml` (adaptive: background, foreground, monochrome). Built from the web `src/lib/assets/favicon.svg`: the glyph path is copied into `drawable/ic_launcher_foreground.xml` scaled into the safe zone, background is the favicon red `#FF2056`. Android launchers can't use SVG directly, so keep this in sync by hand when the favicon changes.
 
 ## Build
 
