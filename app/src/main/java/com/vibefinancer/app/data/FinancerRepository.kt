@@ -4,7 +4,6 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -22,26 +21,51 @@ class FinancerRepository(private val store: SessionStore) {
 
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
-    private suspend fun api(): ApiService {
-        val baseUrl = store.baseUrl()
-        val client = OkHttpClient.Builder()
-            .addInterceptor(Interceptor { chain ->
-                val token = kotlinx.coroutines.runBlocking { store.token() }
+    /**
+     * The token header must be available when OkHttp runs the request, but
+     * interceptors cannot call suspending DataStore reads. [call] snapshots the
+     * session once per request and publishes the token here; the interceptor
+     * only reads this volatile field. Single user, single token, so a race
+     * between concurrent requests is harmless.
+     */
+    @Volatile
+    private var requestToken: String? = null
+
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val token = requestToken
                 val req = if (token != null) {
                     chain.request().newBuilder()
                         .header("Cookie", "session=$token")
                         .build()
                 } else chain.request()
                 chain.proceed(req)
-            })
+            }
             .addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BASIC))
             .build()
-        return Retrofit.Builder()
-            .baseUrl("$baseUrl/")
-            .client(client)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
-            .create(ApiService::class.java)
+    }
+
+    /** Retrofit rebuilds are expensive (converter + reflection): reuse per base URL. */
+    private var cachedBaseUrl: String? = null
+    private var cachedService: ApiService? = null
+    private val apiLock = Any()
+
+    private suspend fun api(): ApiService {
+        val snap = store.snapshot()
+        requestToken = snap.token
+        synchronized(apiLock) {
+            if (snap.baseUrl != cachedBaseUrl || cachedService == null) {
+                cachedService = Retrofit.Builder()
+                    .baseUrl("${snap.baseUrl.trimEnd('/')}/")
+                    .client(httpClient)
+                    .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+                    .build()
+                    .create(ApiService::class.java)
+                cachedBaseUrl = snap.baseUrl
+            }
+            return cachedService!!
+        }
     }
 
     private suspend fun <T> call(block: suspend ApiService.() -> T): ApiResult<T> =
@@ -67,21 +91,30 @@ class FinancerRepository(private val store: SessionStore) {
     suspend fun login(baseUrl: String, email: String, password: String): ApiResult<String> {
         store.setBaseUrl(baseUrl)
         store.setToken(null)
+        requestToken = null
         // Login call goes to the freshly set base URL without a token.
         val res = call { login(LoginRequest(email.trim(), password)) }
         return when (res) {
             is ApiResult.Ok -> {
                 store.setToken(res.value.sessionToken)
+                requestToken = res.value.sessionToken
                 ApiResult.Ok(res.value.sessionToken)
             }
             is ApiResult.Err -> res
         }
     }
 
-    suspend fun logout() = store.setToken(null)
+    suspend fun logout() {
+        store.setToken(null)
+        requestToken = null
+    }
 
     suspend fun detailedAccounts(month: Int, year: Int) =
         call { detailedAccounts(month, year) }
+
+    /** Lightweight account list (no chartData): use for widget refreshes. */
+    suspend fun lightAccounts() =
+        call { accounts() }
 
     suspend fun monthTransactions(month: Int, year: Int, tz: String, limit: Int? = null) =
         call { monthTransactions(month, year, tz, limit) }

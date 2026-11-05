@@ -10,7 +10,9 @@ dynamic colors. minSdk 35 (Android 15), targetSdk 36 (Android 16).
   - Month navigation
   - Stat cards: current balance, projected balance, income, expenses, savings rate
   - Inline new-transaction form: expense / income / transfer, account, amount,
-    name, category, payee, date and time (`POST /api/transactions`)
+    required title, category, payee, date and time (`POST /api/transactions`).
+    The widget deep link opens this as a full-screen form with the amount
+    field autofocused (numeric keyboard, enter-to-save)
   - Balance overview: end-of-day balance per account across the month
     (`chartData` from `GET /api/accounts/detailed`)
   - Recent transactions grouped by day with daily spend, search, category filter,

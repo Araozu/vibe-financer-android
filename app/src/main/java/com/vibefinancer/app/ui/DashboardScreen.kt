@@ -69,6 +69,10 @@ import com.vibefinancer.app.data.ApiResult
 import com.vibefinancer.app.data.DetailedAccountDto
 import com.vibefinancer.app.data.FinancerRepository
 import com.vibefinancer.app.data.TransactionDto
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -95,6 +99,9 @@ class DashboardState(private val repo: FinancerRepository) {
     private val _data = MutableStateFlow(DashboardData(loading = true))
     val data: StateFlow<DashboardData> = _data.asStateFlow()
 
+    /** Independent scope so the two parallel fetches in [load] aren't bound to a caller. */
+    private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val _month = MutableStateFlow(Calendar.getInstance().get(Calendar.MONTH))
     val month: StateFlow<Int> = _month.asStateFlow()
     private val _year = MutableStateFlow(Calendar.getInstance().get(Calendar.YEAR))
@@ -105,8 +112,11 @@ class DashboardState(private val repo: FinancerRepository) {
         val m = _month.value
         val y = _year.value
         val tz = TimeZone.getDefault().id
-        val detailed = repo.detailedAccounts(m, y)
-        val monthTx = repo.monthTransactions(m, y, tz)
+        // The two reads are independent: run them in parallel to halve latency.
+        val detailedDeferred = loadScope.async { repo.detailedAccounts(m, y) }
+        val monthTxDeferred = loadScope.async { repo.monthTransactions(m, y, tz) }
+        val detailed = detailedDeferred.await()
+        val monthTx = monthTxDeferred.await()
         _data.value = when (detailed) {
             is ApiResult.Err -> DashboardData(error = detailed.message)
             is ApiResult.Ok -> when (monthTx) {
@@ -384,23 +394,39 @@ private fun RecentTransactionsCard(
     val accountsById = remember(accounts) { accounts.associateBy { it.id } }
 
     val filtersActive = query.isNotBlank() || category != null
-    val posted = postedAll.filter { matchesFilters(it, query, category) }
-    val upcoming = upcomingAll.filter { matchesFilters(it, query, category) }
-    val shown = when {
-        filtersActive -> posted.take(500)
-        showAll -> posted
-        else -> posted.take(10)
+    // Filtering + grouping re-parse every timestamp: keep them out of the
+    // recomposition path for scrolling/typing.
+    val posted = remember(postedAll, query, category) {
+        postedAll.filter { matchesFilters(it, query, category) }
     }
-    val summaryText = when {
-        filtersActive -> "${posted.size} ${if (posted.size == 1) "match" else "matches"} in $monthName"
-        postedAll.isEmpty() -> "Nothing recorded in $monthName yet"
-        shown.size < posted.size -> "Latest ${shown.size} of ${posted.size} in $monthName"
-        else -> "${posted.size} ${if (posted.size == 1) "transaction" else "transactions"} in $monthName"
+    val upcoming = remember(upcomingAll, query, category) {
+        upcomingAll.filter { matchesFilters(it, query, category) }
     }
-    val categoryLabel = when (val c = category) {
-        null -> "All categories"
-        "" -> "Uncategorized"
-        else -> c
+    val shown = remember(posted, showAll, filtersActive) {
+        when {
+            filtersActive -> posted.take(500)
+            showAll -> posted
+            else -> posted.take(10)
+        }
+    }
+    val upcomingGroups = remember(upcoming, showUpcoming) {
+        if (showUpcoming) groupByDay(upcoming) else emptyList()
+    }
+    val shownGroups = remember(shown) { groupByDay(shown) }
+    val summaryText = remember(postedAll, posted, shown, filtersActive, monthName) {
+        when {
+            filtersActive -> "${posted.size} ${if (posted.size == 1) "match" else "matches"} in $monthName"
+            postedAll.isEmpty() -> "Nothing recorded in $monthName yet"
+            shown.size < posted.size -> "Latest ${shown.size} of ${posted.size} in $monthName"
+            else -> "${posted.size} ${if (posted.size == 1) "transaction" else "transactions"} in $monthName"
+        }
+    }
+    val categoryLabel = remember(category) {
+        when (val c = category) {
+            null -> "All categories"
+            "" -> "Uncategorized"
+            else -> c
+        }
     }
 
     OutlinedCard(Modifier.fillMaxWidth()) {
@@ -461,7 +487,7 @@ private fun RecentTransactionsCard(
             }
 
             if (showUpcoming && upcoming.isNotEmpty()) {
-                DayGroups(groupByDay(upcoming), accountsById, upcoming = true)
+                DayGroups(upcomingGroups, accountsById, upcoming = true)
             }
             if (shown.isEmpty()) {
                 val emptyText = when {
@@ -481,7 +507,7 @@ private fun RecentTransactionsCard(
                     TextButton(onClick = { query = ""; category = null }) { Text("Clear filters") }
                 }
             } else {
-                DayGroups(groupByDay(shown), accountsById, upcoming = false)
+                DayGroups(shownGroups, accountsById, upcoming = false)
             }
             if (!filtersActive && posted.size > 10) {
                 TextButton(onClick = { showAll = !showAll }, modifier = Modifier.fillMaxWidth()) {

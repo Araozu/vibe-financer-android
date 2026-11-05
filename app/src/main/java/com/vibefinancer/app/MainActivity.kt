@@ -56,11 +56,11 @@ class MainActivity : ComponentActivity() {
                 // (widget taps while alive). Keyed on the deep-link state so a
                 // slow DataStore read can't overwrite a navigation twice.
                 LaunchedEffect(pendingDeepLink) {
-                    val token = store.token()
+                    val snap = store.snapshot()
                     val dl = deepLinkAccount.value
                     deepLinkAccount.value = null
                     screen = when {
-                        token == null -> Screen.Login
+                        snap.token == null -> Screen.Login
                         dl != null -> Screen.Form(dl.ifBlank { null })
                         screen is Screen.Loading -> Screen.Dashboard
                         else -> screen
@@ -71,7 +71,8 @@ class MainActivity : ComponentActivity() {
                 val accounts = dashData.accounts
                 LaunchedEffect(accounts) {
                     if (accounts.isNotEmpty()) {
-                        val wanted = store.widgetAccountId()
+                        val snap = store.snapshot()
+                        val wanted = snap.widgetAccountId
                             ?: store.let {
                                 // Default the widget to the first account on first run.
                                 accounts.first().id.also { id -> it.setWidgetAccountId(id) }
@@ -79,6 +80,7 @@ class MainActivity : ComponentActivity() {
                         accounts.firstOrNull { it.id == wanted }?.let { acc ->
                             BalanceWidget.refreshWithBalance(
                                 context,
+                                acc.id,
                                 acc.name,
                                 acc.currentBalance,
                                 acc.currencySymbol ?: acc.currencyCode ?: ""

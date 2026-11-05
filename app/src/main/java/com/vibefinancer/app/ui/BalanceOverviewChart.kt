@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -43,7 +44,7 @@ private fun compactMoney(value: Double): String =
 @Composable
 fun BalanceOverviewChart(accounts: List<DetailedAccountDto>, modifier: Modifier = Modifier) {
     val fallback = MaterialTheme.colorScheme.primary
-    val series = accounts.filter { it.chartData.size > 1 }
+    val series = remember(accounts) { accounts.filter { it.chartData.size > 1 } }
     if (series.isEmpty()) {
         Text(
             "Add transactions to see balances over the month.",
@@ -55,12 +56,15 @@ fun BalanceOverviewChart(accounts: List<DetailedAccountDto>, modifier: Modifier 
     val measurer = rememberTextMeasurer()
     val labelStyle = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
     val gridColor = MaterialTheme.colorScheme.outlineVariant
-    val values = series.flatMap { acc -> acc.chartData.map { it.balance } } + 0.0
-    val maxV = values.max()
-    val minV = values.min()
-    val span = (maxV - minV).takeIf { it > 0 } ?: 1.0
-    val longest = series.maxBy { it.chartData.size }.chartData
-    val count = longest.size
+    // Min/max + longest series memoized so scrolling doesn't recompute them.
+    val grid = remember(series) {
+        val values = series.flatMap { acc -> acc.chartData.map { it.balance } } + 0.0
+        val max = values.max()
+        val min = values.min()
+        Triple(min, max, (max - min).takeIf { it > 0 } ?: 1.0)
+    }
+    val (minV, maxV, span) = grid
+    val count = remember(series) { series.maxBy { it.chartData.size }.chartData.size }
 
     Canvas(modifier.fillMaxWidth().height(180.dp)) {
         val left = 40.dp.toPx()

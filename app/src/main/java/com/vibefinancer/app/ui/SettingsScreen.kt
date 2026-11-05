@@ -118,8 +118,11 @@ fun SettingsScreen(
                                 widgetAccountId = acc.id
                                 scope.launch {
                                     store.setWidgetAccountId(acc.id)
-                                    store.setWidgetCache(
-                                        "${acc.name}|${acc.currentBalance}|${acc.currencySymbol ?: acc.currencyCode ?: ""}|now"
+                                    store.setWidgetCacheV2(
+                                        acc.id,
+                                        acc.name,
+                                        acc.currentBalance,
+                                        acc.currencySymbol ?: acc.currencyCode ?: ""
                                     )
                                     com.vibefinancer.app.widget.BalanceWidget.refresh(context)
                                     snackbar.showSnackbar("Widget will show ${acc.name}")

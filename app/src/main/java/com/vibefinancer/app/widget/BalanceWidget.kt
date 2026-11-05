@@ -44,8 +44,8 @@ import com.vibefinancer.app.R
 import com.vibefinancer.app.data.ApiResult
 import com.vibefinancer.app.data.FinancerRepository
 import com.vibefinancer.app.data.SessionStore
+import com.vibefinancer.app.data.parseWidgetCache
 import java.text.NumberFormat
-import java.util.Calendar
 import java.util.Locale
 
 private fun formatWidgetMoney(cents: Long, symbol: String): String {
@@ -72,15 +72,17 @@ private fun formatWidgetMoney(cents: Long, symbol: String): String {
 class BalanceWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val store = SessionStore(context)
-        val accountId = store.widgetAccountId()
-        val cache = store.widgetCache()?.split("|")
+        // Render from cache only: no network, no per-key DataStore roundtrips.
+        // A single snapshot read keeps cold widget renders to one file read.
+        val snap = SessionStore(context).snapshot()
+        val cache = parseWidgetCache(snap.widgetCacheRaw)
+        val accountId = cache?.accountId ?: snap.widgetAccountId
         provideContent {
             GlanceTheme(DynamicThemeColorProviders) {
                 WidgetContent(
-                    accountName = cache?.getOrNull(0) ?: "VibeFinancer",
-                    balanceText = if (cache != null && cache.size >= 3) {
-                        formatWidgetMoney(cache[1].toLongOrNull() ?: 0L, cache[2])
+                    accountName = cache?.accountName ?: "VibeFinancer",
+                    balanceText = if (cache != null) {
+                        formatWidgetMoney(cache.balanceCents, cache.symbol)
                     } else null,
                     accountId = accountId
                 )
@@ -164,18 +166,23 @@ class BalanceWidget : GlanceAppWidget() {
 
         suspend fun refreshWithBalance(
             context: Context,
+            accountId: String,
             accountName: String,
             balanceCents: Int,
             symbol: String
         ) {
             val store = SessionStore(context)
-            store.setWidgetCache("$accountName|$balanceCents|$symbol|now")
+            store.setWidgetCacheV2(accountId, accountName, balanceCents, symbol)
             BalanceWidget().updateAll(context)
         }
     }
 }
 
-/** Re-fetch the selected account balance and push it to the widget. */
+/**
+ * Re-fetch the selected account balance and push it to the widget. Uses the
+ * lightweight account list (no chart data) so a tap refreshes in one small
+ * request instead of the full detailed payload.
+ */
 class RefreshAction : ActionCallback {
     override suspend fun onAction(
         context: Context,
@@ -183,16 +190,17 @@ class RefreshAction : ActionCallback {
         parameters: ActionParameters
     ) {
         val store = SessionStore(context)
+        val snap = store.snapshot()
         val accountId = parameters[BalanceWidget.AccountKey]?.ifBlank { null }
-            ?: store.widgetAccountId()
+            ?: parseWidgetCache(snap.widgetCacheRaw)?.accountId
+            ?: snap.widgetAccountId
             ?: return
         val repo = FinancerRepository(store)
-        val now = Calendar.getInstance()
-        when (val res = repo.detailedAccounts(now.get(Calendar.MONTH), now.get(Calendar.YEAR))) {
+        when (val res = repo.lightAccounts()) {
             is ApiResult.Ok -> {
                 res.value.firstOrNull { it.id == accountId }?.let { acc ->
                     val symbol = acc.currencySymbol ?: acc.currencyCode ?: ""
-                    store.setWidgetCache("${acc.name}|${acc.currentBalance}|$symbol|now")
+                    store.setWidgetCacheV2(acc.id, acc.name, acc.currentBalance, symbol)
                     updateAppWidgetState(context, glanceId) {}
                     BalanceWidget().updateAll(context)
                 }

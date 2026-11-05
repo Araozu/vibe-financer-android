@@ -41,8 +41,28 @@ fun summarize(
     val (upcoming, posted) = transactions.partition { txInstant(it).isAfter(now) }
     val pending = if (isCurrentMonth) upcoming else emptyList()
     val stats = if (isCurrentMonth) posted else transactions
+    // Accumulate pending deltas per account in one pass instead of re-summing
+    // per account (O(accounts × transactions)). The widget's main account
+    // carries the most movements, so this is the hot path.
+    val pendingDelta = mutableMapOf<String, Int>()
+    for (tx in pending) {
+        when {
+            tx.type == "transfer" -> {
+                pendingDelta[tx.accountId] = (pendingDelta[tx.accountId] ?: 0) - tx.amount
+                val dest = tx.toAccountId
+                if (dest != null) {
+                    pendingDelta[dest] =
+                        (pendingDelta[dest] ?: 0) + (tx.destinationAmount ?: tx.amount)
+                }
+            }
+            tx.type == "income" ->
+                pendingDelta[tx.accountId] = (pendingDelta[tx.accountId] ?: 0) + tx.amount
+            else ->
+                pendingDelta[tx.accountId] = (pendingDelta[tx.accountId] ?: 0) - tx.amount
+        }
+    }
     val accountBalances = accounts.associate { acc ->
-        acc.id to (acc.currentBalance - pending.sumOf { balanceDelta(it, acc.id) })
+        acc.id to (acc.currentBalance - (pendingDelta[acc.id] ?: 0))
     }
     return DashboardSummary(
         currentBalance = accountBalances.values.sum(),

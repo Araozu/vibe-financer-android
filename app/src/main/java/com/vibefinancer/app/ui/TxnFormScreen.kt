@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -46,9 +47,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.vibefinancer.app.data.ApiResult
@@ -89,7 +98,11 @@ fun TxnFormScreen(
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp).verticalScroll(rememberScrollState())
         ) {
-            TransactionForm(repo, accounts, initialAccountId, onSaved)
+            // Fresh form state per target account: warm widget taps for another
+            // account must not reuse the previous account's half-filled form.
+            androidx.compose.runtime.key(initialAccountId) {
+                TransactionForm(repo, accounts, initialAccountId, onSaved, autofocusAmount = true)
+            }
         }
     }
 }
@@ -101,23 +114,41 @@ fun TransactionForm(
     accounts: List<DetailedAccountDto>,
     initialAccountId: String?,
     onSaved: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    autofocusAmount: Boolean = false
 ) {
     val scope = rememberCoroutineScope()
+    val keyboard = LocalSoftwareKeyboardController.current
+    val amountFocus = remember { FocusRequester() }
 
-    var accountId by remember { mutableStateOf(initialAccountId ?: "") }
-    var typeIndex by remember { mutableStateOf(0) }
-    var amount by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("") }
-    var payee by remember { mutableStateOf("") }
-    var toAccountId by remember { mutableStateOf("") }
-    var exchangeRate by remember { mutableStateOf("") }
+    // Keyed on the deep-link account so a warm widget tap for another account
+    // resets the selection instead of keeping the previous account.
+    var accountId by remember(initialAccountId) { mutableStateOf(initialAccountId ?: "") }
+    var typeIndex by rememberSaveable { mutableStateOf(0) }
+    var amount by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(""))
+    }
+    var name by rememberSaveable { mutableStateOf("") }
+    var category by rememberSaveable { mutableStateOf("") }
+    var payee by rememberSaveable { mutableStateOf("") }
+    var toAccountId by rememberSaveable { mutableStateOf("") }
+    var exchangeRate by rememberSaveable { mutableStateOf("") }
     var dateTime by remember { mutableStateOf(LocalDateTime.now()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showDate by remember { mutableStateOf(false) }
     var showTime by remember { mutableStateOf(false) }
+
+    // Amount is preselected on the dedicated form screen: focus it as soon as
+    // the form opens so the numeric keyboard is already up for one-tap widget
+    // entries. Selection covers any existing text so typing replaces it
+    // outright. The inline dashboard form must NOT steal focus.
+    LaunchedEffect(Unit) {
+        if (autofocusAmount) {
+            amountFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
 
     LaunchedEffect(accounts) {
         if (accounts.isEmpty()) return@LaunchedEffect
@@ -130,10 +161,23 @@ fun TransactionForm(
     val type = TYPES[typeIndex]
     val isTransfer = type == "transfer"
 
+    // Balance labels are memoized: NumberFormat construction per account per
+    // keystroke was the main source of typing jank in this form.
+    val accountLabels = remember(accounts) {
+        accounts.associate { acc ->
+            acc.id to "${acc.name} · ${formatMoney(acc.currentBalance, acc.currencyCode, acc.currencySymbol)}"
+        }
+    }
+    val toAccounts = remember(accounts, accountId) {
+        accounts.filter { it.id != accountId }
+    }
+
     fun save() {
-        val amt = amount.replace(',', '.').toDoubleOrNull()
+        if (busy) return
+        val amt = amount.text.replace(',', '.').toDoubleOrNull()
         val validation = when {
             accountId.isBlank() -> "Pick an account"
+            name.isBlank() -> "Enter a title"
             amt == null || amt <= 0 -> "Enter a valid amount"
             isTransfer && toAccountId.isBlank() -> "Pick a destination account"
             else -> null
@@ -151,7 +195,7 @@ fun TransactionForm(
                     accountId = accountId,
                     type = type,
                     amount = amt,
-                    name = name.ifBlank { null },
+                    name = name.trim().ifBlank { null },
                     description = null,
                     category = category.ifBlank { null },
                     payee = payee.ifBlank { null },
@@ -163,13 +207,19 @@ fun TransactionForm(
             busy = false
             when (res) {
                 is ApiResult.Ok -> {
-                    amount = ""
+                    amount = TextFieldValue("")
                     name = ""
                     category = ""
                     payee = ""
                     exchangeRate = ""
                     dateTime = LocalDateTime.now()
                     onSaved()
+                    // Dedicated form screen: keep the fast-entry loop going
+                    // with amount focused and keyboard up.
+                    if (autofocusAmount) {
+                        amountFocus.requestFocus()
+                        keyboard?.show()
+                    }
                 }
                 is ApiResult.Err -> error = res.message
             }
@@ -187,33 +237,30 @@ fun TransactionForm(
             }
         }
 
-        AccountDropdown("Account", accounts, accountId, onPick = {
+        AccountDropdown("Account", accounts, accountLabels, accountId, onPick = {
             accountId = it
             if (toAccountId == it) toAccountId = accounts.firstOrNull { a -> a.id != it }?.id ?: ""
         })
         if (isTransfer) {
             AccountDropdown(
                 "To account",
-                accounts.filter { it.id != accountId },
+                toAccounts,
+                accountLabels,
                 toAccountId,
                 onPick = { toAccountId = it }
             )
         }
 
-        OutlinedTextField(
+        AmountField(
             value = amount,
             onValueChange = { amount = it },
-            label = { Text("Amount") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            modifier = Modifier.fillMaxWidth()
+            focusRequester = amountFocus,
+            onDone = { save() }
         )
-        OutlinedTextField(
+        TitleField(
             value = name,
             onValueChange = { name = it },
-            label = { Text("Name (optional)") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            onDone = { save() }
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(
@@ -237,7 +284,11 @@ fun TransactionForm(
                 onValueChange = { exchangeRate = it },
                 label = { Text("Exchange rate (only if currencies differ)") },
                 singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Decimal,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(onDone = { save() }),
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -306,11 +357,67 @@ fun TransactionForm(
     }
 }
 
+/**
+ * Amount entry: focused on open with the numeric keyboard up, existing text
+ * selected so typing replaces it, and Done/enter submits the form.
+ * A separate scope bounds each keystroke's recomposition to this field.
+ */
+@Composable
+private fun AmountField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    focusRequester: FocusRequester,
+    onDone: () -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text("Amount") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Decimal,
+            imeAction = ImeAction.Done
+        ),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(focusRequester)
+            .onFocusChanged {
+                if (it.isFocused && value.text.isNotEmpty()) {
+                    onValueChange(value.copy(selection = TextRange(0, value.text.length)))
+                }
+            }
+    )
+}
+
+/** Title is required (like the web form); Done/enter submits. */
+@Composable
+private fun TitleField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onDone: () -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text("Title") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Text,
+            imeAction = ImeAction.Done,
+            capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences
+        ),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AccountDropdown(
     label: String,
     accounts: List<DetailedAccountDto>,
+    labels: Map<String, String>,
     selectedId: String,
     onPick: (String) -> Unit
 ) {
@@ -318,7 +425,7 @@ private fun AccountDropdown(
     val selected = accounts.firstOrNull { it.id == selectedId }
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
         OutlinedTextField(
-            value = selected?.name ?: "Select…",
+            value = selected?.let { labels[it.id] ?: it.name } ?: "Select…",
             onValueChange = {},
             readOnly = true,
             label = { Text(label) },
@@ -328,11 +435,7 @@ private fun AccountDropdown(
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             accounts.forEach { acc ->
                 DropdownMenuItem(
-                    text = {
-                        Text(
-                            "${acc.name} · ${formatMoney(acc.currentBalance, acc.currencyCode, acc.currencySymbol)}"
-                        )
-                    },
+                    text = { Text(labels[acc.id] ?: acc.name) },
                     onClick = { onPick(acc.id); expanded = false }
                 )
             }
