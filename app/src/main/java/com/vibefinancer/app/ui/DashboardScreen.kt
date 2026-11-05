@@ -1,9 +1,11 @@
 package com.vibefinancer.app.ui
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,24 +15,34 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Savings
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -41,35 +53,40 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vibefinancer.app.data.ApiResult
 import com.vibefinancer.app.data.DetailedAccountDto
 import com.vibefinancer.app.data.FinancerRepository
-import com.vibefinancer.app.data.NetWorthTrendPointDto
 import com.vibefinancer.app.data.TransactionDto
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneOffset
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Calendar
+import java.util.Locale
 import java.util.TimeZone
+import kotlin.math.roundToInt
 
 data class DashboardData(
     val accounts: List<DetailedAccountDto> = emptyList(),
-    /** Full month transaction list per account (for month totals + per-account history). */
-    val monthTx: Map<String, List<TransactionDto>> = emptyMap(),
-    val trend: List<NetWorthTrendPointDto> = emptyList(),
+    /** Every transaction in the selected month, across accounts. */
+    val transactions: List<TransactionDto> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null
 )
@@ -90,22 +107,12 @@ class DashboardState(private val repo: FinancerRepository) {
         val tz = TimeZone.getDefault().id
         val detailed = repo.detailedAccounts(m, y)
         val monthTx = repo.monthTransactions(m, y, tz)
-        // 30-day net-worth trend ending today.
-        val end = LocalDate.now()
-        val start = end.minusDays(30)
-        val trend = repo.netWorthTrend(
-            start.atStartOfDay().toInstant(ZoneOffset.UTC).toString(),
-            end.atTime(23, 59, 59).toInstant(ZoneOffset.UTC).toString(),
-            1
-        )
         _data.value = when (detailed) {
             is ApiResult.Err -> DashboardData(error = detailed.message)
-            is ApiResult.Ok -> DashboardData(
-                accounts = detailed.value,
-                monthTx = (monthTx as? ApiResult.Ok)?.value?.transactions
-                    ?.groupBy { it.accountId } ?: emptyMap(),
-                trend = (trend as? ApiResult.Ok)?.value?.trend ?: emptyList()
-            )
+            is ApiResult.Ok -> when (monthTx) {
+                is ApiResult.Ok -> DashboardData(accounts = detailed.value, transactions = monthTx.value.transactions)
+                is ApiResult.Err -> DashboardData(accounts = detailed.value, error = monthTx.message)
+            }
         }
     }
 
@@ -122,15 +129,24 @@ class DashboardState(private val repo: FinancerRepository) {
     }
 }
 
-private fun void(@Suppress("UNUSED_PARAMETER") x: Any?) {}
+private val DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.getDefault())
+private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+private data class StatItem(
+    val title: String,
+    val value: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val tint: Color,
+    val valueColor: Color = Color.Unspecified
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     state: DashboardState,
-    onAddTransaction: (accountId: String?) -> Unit,
+    repo: FinancerRepository,
     onOpenSettings: () -> Unit,
-    onPickWidgetAccount: (DetailedAccountDto) -> Unit,
     onSessionExpired: () -> Unit
 ) {
     val data by state.data.collectAsState()
@@ -138,23 +154,62 @@ fun DashboardScreen(
     val year by state.year.collectAsState()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
+    var now by remember { mutableStateOf(Instant.now()) }
 
     fun reload() = scope.launch {
+        now = Instant.now()
         state.load()
         state.data.value.error?.let { snackbar.showSnackbar(it) }
     }
 
     LaunchedEffect(month, year) { reload() }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000)
+            now = Instant.now()
+        }
+    }
     LaunchedEffect(data.error) {
         if (data.error?.contains("Unauthorized", ignoreCase = true) == true) onSessionExpired()
     }
 
-    val netWorth = data.accounts.sumOf { it.currentBalance }
+    val today = LocalDate.now()
+    val isCurrentMonth = today.year == year && today.monthValue - 1 == month
+    val monthName = monthLabel(month, year).substringBefore(" ")
+    val periodLabel = if (isCurrentMonth) "${monthName.take(3)} 1 – today" else "All of $monthName"
+    val summary = remember(data.accounts, data.transactions, now, isCurrentMonth) {
+        summarize(data.accounts, data.transactions, now, isCurrentMonth)
+    }
+    val primary = data.accounts.firstOrNull()
+    fun money(cents: Int): String = formatMoney(cents, primary?.currencyCode, primary?.currencySymbol)
+    val savingsSubtitle = if (summary.income > 0) "Of income kept this month" else "No income yet"
+    val stats = listOf(
+        StatItem(
+            "Current balance", money(summary.currentBalance),
+            "Across ${data.accounts.size} ${if (data.accounts.size == 1) "account" else "accounts"}",
+            Icons.Filled.AccountBalanceWallet, MaterialTheme.colorScheme.primary
+        ),
+        StatItem(
+            "Projected balance", money(summary.projectedBalance),
+            "End of $monthName · incl. upcoming",
+            Icons.Filled.Event, MaterialTheme.colorScheme.tertiary
+        ),
+        StatItem("Income", money(summary.income), periodLabel, Icons.Filled.TrendingUp, incomeColor()),
+        StatItem(
+            "Expenses", money(summary.expenses), periodLabel,
+            Icons.Filled.TrendingDown, MaterialTheme.colorScheme.error
+        ),
+        StatItem(
+            "Savings rate", "%.1f%%".format(summary.savingsRate), savingsSubtitle,
+            Icons.Filled.Savings, MaterialTheme.colorScheme.secondary,
+            if (summary.savingsRate < 0) MaterialTheme.colorScheme.error else Color.Unspecified
+        )
+    )
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("VibeFinancer") },
+                title = { Text("Vibe Financer") },
                 actions = {
                     IconButton(onClick = { reload() }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
@@ -165,14 +220,7 @@ fun DashboardScreen(
                 }
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { onAddTransaction(data.accounts.firstOrNull()?.id) },
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("Transaction") }
-            )
-        }
+        snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         if (data.loading && data.accounts.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -181,34 +229,53 @@ fun DashboardScreen(
             return@Scaffold
         }
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                Spacer(Modifier.height(4.dp))
-                MonthNav(month, year, onPrev = { state.prevMonth() }, onNext = { state.nextMonth() })
+                MonthBar(month, year, onPrev = { state.prevMonth() }, onNext = { state.nextMonth() })
             }
             item {
-                NetWorthCard(netWorth, data.trend)
+                StatGrid(stats)
             }
             item {
-                Text("Accounts", style = MaterialTheme.typography.titleMedium)
+                NewTransactionCard(repo, data.accounts, onSaved = { reload() })
             }
-            items(data.accounts, key = { it.id }) { acc ->
-                AccountCard(
-                    acc = acc,
-                    monthTx = data.monthTx[acc.id] ?: acc.last10Transactions,
-                    onAddTransaction = { onAddTransaction(acc.id) },
-                    onSetAsWidget = { onPickWidgetAccount(acc) }
+            item {
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Balance overview", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "End-of-day balance for each account in ${monthLabel(month, year)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        BalanceOverviewChart(data.accounts)
+                        AccountLegend(data.accounts)
+                    }
+                }
+            }
+            item {
+                RecentTransactionsCard(
+                    transactions = data.transactions,
+                    accounts = data.accounts,
+                    now = now,
+                    monthName = monthName
                 )
             }
-            item { Spacer(Modifier.height(80.dp)) }
+            item {
+                SavingsGoalCard(data.accounts, summary.accountBalances)
+            }
         }
     }
 }
 
 @Composable
-private fun MonthNav(month: Int, year: Int, onPrev: () -> Unit, onNext: () -> Unit) {
+private fun incomeColor(): Color = if (isSystemInDarkTheme()) Color(0xFF7FD8A0) else Color(0xFF1B7A3D)
+
+@Composable
+private fun MonthBar(month: Int, year: Int, onPrev: () -> Unit, onNext: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -221,190 +288,358 @@ private fun MonthNav(month: Int, year: Int, onPrev: () -> Unit, onNext: () -> Un
 }
 
 @Composable
-private fun NetWorthCard(netWorthCents: Int, trend: List<NetWorthTrendPointDto>) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-    ) {
+private fun StatGrid(items: List<StatItem>) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        items.chunked(2).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                row.forEach { item -> StatCard(item, Modifier.weight(1f)) }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatCard(item: StatItem, modifier: Modifier) {
+    OutlinedCard(modifier = modifier) {
         Column(Modifier.padding(16.dp)) {
-            Text("Net worth", style = MaterialTheme.typography.labelLarge)
-            val first = trend.firstOrNull()?.netWorth
-            val last = trend.lastOrNull()?.netWorth
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    formatMoney(netWorthCents, null, null),
-                    style = MaterialTheme.typography.headlineMedium
+                    item.title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
-                Spacer(Modifier.width(8.dp))
-                if (first != null && last != null && trend.size > 1) {
-                    val up = last >= first
-                    Icon(
-                        if (up) Icons.Filled.TrendingUp else Icons.Filled.TrendingDown,
-                        contentDescription = null,
-                        tint = if (up) Color(0xFF1B7A3D) else Color(0xFFB3261E),
-                        modifier = Modifier.size(20.dp)
-                    )
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(item.icon, contentDescription = null, tint = item.tint, modifier = Modifier.size(18.dp))
                 }
             }
-            if (trend.size > 1) {
-                Spacer(Modifier.height(8.dp))
-                TrendChart(trend.map { it.netWorth / 100.0 })
-            } else {
-                Text(
-                    "Add transactions to see the 30-day graph.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TrendChart(values: List<Double>, height: androidx.compose.ui.unit.Dp = 120.dp) {
-    val line = MaterialTheme.colorScheme.primary
-    val fill = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
-    Canvas(
-        modifier = Modifier.fillMaxWidth().height(height)
-    ) {
-        if (values.size < 2) return@Canvas
-        val min = values.min()
-        val max = values.max()
-        val span = (max - min).takeIf { it != 0.0 } ?: 1.0
-        val stepX = size.width / (values.size - 1)
-        val pts = values.mapIndexed { i, v ->
-            Offset(
-                i * stepX,
-                (size.height - ((v - min) / span * (size.height - 8.dp.toPx()) + 4.dp.toPx())).toFloat()
+            Spacer(Modifier.height(10.dp))
+            Text(
+                item.value,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = item.valueColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                item.subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
-        val path = Path().apply {
-            moveTo(pts.first().x, pts.first().y)
-            pts.drop(1).forEach { lineTo(it.x, it.y) }
-        }
-        val fillPath = Path().apply {
-            addPath(path)
-            lineTo(pts.last().x, size.height)
-            lineTo(pts.first().x, size.height)
-            close()
-        }
-        drawPath(fillPath, Brush.verticalGradient(listOf(fill, Color.Transparent)))
-        drawPath(path, line, style = Stroke(width = 3.dp.toPx()))
-        drawCircle(line, 5.dp.toPx(), pts.last())
     }
 }
 
 @Composable
-private fun AccountCard(
-    acc: DetailedAccountDto,
-    monthTx: List<TransactionDto>,
-    onAddTransaction: () -> Unit,
-    onSetAsWidget: () -> Unit
+private fun NewTransactionCard(
+    repo: FinancerRepository,
+    accounts: List<DetailedAccountDto>,
+    onSaved: () -> Unit
 ) {
-    // Signed deltas from this account's perspective (transfers included).
-    fun delta(tx: TransactionDto): Int = when {
-        tx.type == "transfer" && tx.accountId == acc.id -> -tx.amount
-        tx.type == "transfer" -> tx.destinationAmount ?: tx.amount
-        tx.type == "income" -> tx.amount
-        else -> -tx.amount
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("New transaction", style = MaterialTheme.typography.titleMedium)
+            if (accounts.isEmpty()) {
+                Text(
+                    "Create an account on the web app to start adding transactions.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                TransactionForm(repo, accounts, initialAccountId = null, onSaved = onSaved)
+            }
+        }
     }
-    val income = monthTx.filter { delta(it) > 0 }.sumOf { delta(it) }
-    val expense = monthTx.filter { delta(it) < 0 }.sumOf { -delta(it) }
-    val sorted = monthTx.sortedByDescending { it.createdAt }
+}
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text(acc.name, style = MaterialTheme.typography.titleLarge)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RecentTransactionsCard(
+    transactions: List<TransactionDto>,
+    accounts: List<DetailedAccountDto>,
+    now: Instant,
+    monthName: String
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var category by rememberSaveable { mutableStateOf<String?>(null) }
+    var showAll by rememberSaveable { mutableStateOf(false) }
+    var showUpcoming by rememberSaveable { mutableStateOf(false) }
+    var categoryMenuOpen by remember { mutableStateOf(false) }
+
+    val sorted = remember(transactions) { transactions.sortedByDescending { txInstant(it) } }
+    val (upcomingAll, postedAll) = remember(sorted, now) { sorted.partition { txInstant(it).isAfter(now) } }
+    val options = remember(transactions) { categoryOptions(transactions) }
+    val hasUncategorized = remember(transactions) { transactions.any { it.category.isNullOrBlank() } }
+    val accountsById = remember(accounts) { accounts.associateBy { it.id } }
+
+    val filtersActive = query.isNotBlank() || category != null
+    val posted = postedAll.filter { matchesFilters(it, query, category) }
+    val upcoming = upcomingAll.filter { matchesFilters(it, query, category) }
+    val shown = when {
+        filtersActive -> posted.take(500)
+        showAll -> posted
+        else -> posted.take(10)
+    }
+    val summaryText = when {
+        filtersActive -> "${posted.size} ${if (posted.size == 1) "match" else "matches"} in $monthName"
+        postedAll.isEmpty() -> "Nothing recorded in $monthName yet"
+        shown.size < posted.size -> "Latest ${shown.size} of ${posted.size} in $monthName"
+        else -> "${posted.size} ${if (posted.size == 1) "transaction" else "transactions"} in $monthName"
+    }
+    val categoryLabel = when (val c = category) {
+        null -> "All categories"
+        "" -> "Uncategorized"
+        else -> c
+    }
+
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Recent transactions", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        listOfNotNull(
-                            acc.type.replaceFirstChar { c -> c.uppercase() },
-                            acc.currencyCode
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall
+                        summaryText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (upcoming.isNotEmpty()) {
+                    OutlinedButton(onClick = { showUpcoming = !showUpcoming }) {
+                        Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Upcoming ${upcoming.size}")
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                placeholder = { Text("Search name, payee, description…") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
+            )
+            ExposedDropdownMenuBox(expanded = categoryMenuOpen, onExpandedChange = { categoryMenuOpen = it }) {
+                OutlinedTextField(
+                    value = categoryLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    singleLine = true,
+                    label = { Text("Category") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(categoryMenuOpen) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                )
+                ExposedDropdownMenu(expanded = categoryMenuOpen, onDismissRequest = { categoryMenuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("All categories") },
+                        onClick = { category = null; categoryMenuOpen = false }
+                    )
+                    if (hasUncategorized) {
+                        DropdownMenuItem(
+                            text = { Text("Uncategorized") },
+                            onClick = { category = ""; categoryMenuOpen = false }
+                        )
+                    }
+                    options.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option) },
+                            onClick = { category = option; categoryMenuOpen = false }
+                        )
+                    }
+                }
+            }
+
+            if (showUpcoming && upcoming.isNotEmpty()) {
+                DayGroups(groupByDay(upcoming), accountsById, upcoming = true)
+            }
+            if (shown.isEmpty()) {
+                val emptyText = when {
+                    filtersActive -> "No transactions match your filters."
+                    postedAll.isEmpty() -> "No transactions in $monthName yet."
+                    else -> ""
+                }
+                if (emptyText.isNotEmpty()) {
+                    Text(
+                        emptyText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)
+                    )
+                }
+                if (filtersActive) {
+                    TextButton(onClick = { query = ""; category = null }) { Text("Clear filters") }
+                }
+            } else {
+                DayGroups(groupByDay(shown), accountsById, upcoming = false)
+            }
+            if (!filtersActive && posted.size > 10) {
+                TextButton(onClick = { showAll = !showAll }, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (showAll) "Show less" else "Show all ${posted.size}")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayGroups(
+    groups: List<DayGroup>,
+    accountsById: Map<String, DetailedAccountDto>,
+    upcoming: Boolean
+) {
+    Column {
+        groups.forEach { group ->
+            val account = group.transactions.firstNotNullOfOrNull { accountsById[it.accountId] }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    group.date.format(DAY_FORMAT),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                if (upcoming) {
+                    Text(
+                        "Upcoming · ",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
                 Text(
-                    formatMoney(acc.currentBalance, acc.currencyCode, acc.currencySymbol),
-                    style = MaterialTheme.typography.headlineSmall
+                    "Total spent ${formatMoney(-group.spent, account?.currencyCode, account?.currencySymbol)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (acc.chartData.size > 1) {
-                TrendChart(acc.chartData.map { it.balance }, height = 72.dp)
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Text(
-                    "+${formatMoney(income, acc.currencyCode, acc.currencySymbol)}",
-                    color = Color(0xFF1B7A3D),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Text(
-                    "−${formatMoney(expense, acc.currencyCode, acc.currencySymbol)}",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-            if (sorted.isEmpty()) {
-                Text("No transactions this month.", style = MaterialTheme.typography.bodySmall)
-            } else {
-                sorted.take(5).forEach { tx ->
-                    TransactionRow(tx, acc, delta(tx) < 0)
+            group.transactions.forEachIndexed { index, tx ->
+                TransactionRow(tx, accountsById[tx.accountId])
+                if (index < group.transactions.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
-                if (sorted.size > 5) {
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransactionRow(tx: TransactionDto, account: DetailedAccountDto?) {
+    val time = txInstant(tx).atZone(ZoneId.systemDefault()).format(TIME_FORMAT)
+    val title = tx.name?.takeIf { it.isNotBlank() }
+        ?: tx.category?.takeIf { it.isNotBlank() }
+        ?: tx.type.replaceFirstChar { it.uppercase() }
+    val details = listOfNotNull(time, account?.name, tx.category?.takeIf { it.isNotBlank() })
+        .joinToString(" · ")
+    val amount = formatMoney(tx.amount, account?.currencyCode, account?.currencySymbol)
+    val (label, color) = when (tx.type) {
+        "expense" -> "−$amount" to MaterialTheme.colorScheme.error
+        "income" -> "+$amount" to incomeColor()
+        else -> amount to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                details,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = MaterialTheme.typography.titleSmall, color = color, maxLines = 1)
+    }
+}
+
+@Composable
+private fun SavingsGoalCard(accounts: List<DetailedAccountDto>, balances: Map<String, Int>) {
+    val account = accounts.firstOrNull { it.goal != null }
+    val goal = account?.goal
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (account == null || goal == null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Filled.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column {
+                        Text("No savings goal", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Set a goal on a savings account in the web app to track it here.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                val current = balances[account.id] ?: account.currentBalance
+                val remaining = (goal.targetAmount - current).coerceAtLeast(0)
+                val progress = if (goal.targetAmount > 0) {
+                    (current.toFloat() / goal.targetAmount).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Filled.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                    Column {
+                        Text(goal.name, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Savings goal · ${account.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        "+${sorted.size - 5} more",
+                        formatMoney(current, account.currencyCode, account.currencySymbol),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "of ${formatMoney(goal.targetAmount, account.currencyCode, account.currencySymbol)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.tertiary,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                )
+                Row(Modifier.fillMaxWidth()) {
+                    Text(
+                        "${(progress * 100).roundToInt()}% saved",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        if (remaining > 0) {
+                            "${formatMoney(remaining, account.currencyCode, account.currencySymbol)} to go"
+                        } else {
+                            "Goal reached"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onAddTransaction) { Text("Add transaction") }
-                TextButton(onClick = onSetAsWidget) { Text("Show in widget") }
-            }
         }
     }
-}
-
-@Composable
-private fun TransactionRow(tx: TransactionDto, acc: DetailedAccountDto, expense: Boolean) {
-    val amountCents = if (tx.type == "transfer" && tx.accountId == acc.id) {
-        -tx.amount
-    } else if (tx.type == "income") {
-        tx.amount
-    } else {
-        -tx.amount
-    }
-    void(expense)
-    ListItem(
-        headlineContent = { Text(tx.name ?: tx.category ?: tx.type) },
-        supportingContent = {
-            Text(
-                listOfNotNull(
-                    acc.name,
-                    tx.category,
-                    formatTxDate(tx.createdAt)
-                ).joinToString(" · ")
-            )
-        },
-        trailingContent = {
-            Text(
-                (if (amountCents < 0) "−" else "+") +
-                    formatMoney(kotlin.math.abs(amountCents), acc.currencyCode, acc.currencySymbol),
-                color = if (amountCents < 0) MaterialTheme.colorScheme.error
-                else Color(0xFF1B7A3D),
-                style = MaterialTheme.typography.titleSmall
-            )
-        }
-    )
 }

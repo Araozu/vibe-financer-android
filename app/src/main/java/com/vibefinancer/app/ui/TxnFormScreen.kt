@@ -3,16 +3,19 @@ package com.vibefinancer.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
@@ -23,14 +26,14 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -38,6 +41,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,10 +59,11 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
-import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 private val TYPES = listOf("expense", "income", "transfer")
+private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM yyyy")
+private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,25 +74,6 @@ fun TxnFormScreen(
     onSaved: () -> Unit,
     onBack: () -> Unit
 ) {
-    val scope = rememberCoroutineScope()
-    val snackbar = remember { SnackbarHostState() }
-
-    var accountId by remember { mutableStateOf(initialAccountId ?: accounts.firstOrNull()?.id ?: "") }
-    var typeIndex by remember { mutableStateOf(0) }
-    var amount by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("") }
-    var payee by remember { mutableStateOf("") }
-    var toAccountId by remember { mutableStateOf(accounts.firstOrNull { it.id != accountId }?.id ?: "") }
-    var exchangeRate by remember { mutableStateOf("") }
-    var dateTime by remember { mutableStateOf(LocalDateTime.now()) }
-    var busy by remember { mutableStateOf(false) }
-    var showDate by remember { mutableStateOf(false) }
-    var showTime by remember { mutableStateOf(false) }
-
-    val type = TYPES[typeIndex]
-    val isTransfer = type == "transfer"
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -98,122 +84,189 @@ fun TxnFormScreen(
                     }
                 }
             )
-        },
-        snackbarHost = { SnackbarHost(snackbar) }
+        }
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp).verticalScroll(rememberScrollState())
         ) {
-            AccountDropdown("Account", accounts, accountId, onPick = {
-                accountId = it
-                if (toAccountId == it) toAccountId = accounts.firstOrNull { a -> a.id != it }?.id ?: ""
-            })
+            TransactionForm(repo, accounts, initialAccountId, onSaved)
+        }
+    }
+}
 
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                TYPES.forEachIndexed { i, t ->
-                    SegmentedButton(
-                        selected = typeIndex == i,
-                        onClick = { typeIndex = i },
-                        shape = SegmentedButtonDefaults.itemShape(i, TYPES.size)
-                    ) { Text(t.replaceFirstChar { c -> c.uppercase() }) }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TransactionForm(
+    repo: FinancerRepository,
+    accounts: List<DetailedAccountDto>,
+    initialAccountId: String?,
+    onSaved: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+
+    var accountId by remember { mutableStateOf(initialAccountId ?: "") }
+    var typeIndex by remember { mutableStateOf(0) }
+    var amount by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("") }
+    var payee by remember { mutableStateOf("") }
+    var toAccountId by remember { mutableStateOf("") }
+    var exchangeRate by remember { mutableStateOf("") }
+    var dateTime by remember { mutableStateOf(LocalDateTime.now()) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var showDate by remember { mutableStateOf(false) }
+    var showTime by remember { mutableStateOf(false) }
+
+    LaunchedEffect(accounts) {
+        if (accounts.isEmpty()) return@LaunchedEffect
+        if (accounts.none { it.id == accountId }) accountId = accounts.first().id
+        if (accounts.none { it.id == toAccountId } || toAccountId == accountId) {
+            toAccountId = accounts.firstOrNull { it.id != accountId }?.id ?: ""
+        }
+    }
+
+    val type = TYPES[typeIndex]
+    val isTransfer = type == "transfer"
+
+    fun save() {
+        val amt = amount.replace(',', '.').toDoubleOrNull()
+        val validation = when {
+            accountId.isBlank() -> "Pick an account"
+            amt == null || amt <= 0 -> "Enter a valid amount"
+            isTransfer && toAccountId.isBlank() -> "Pick a destination account"
+            else -> null
+        }
+        if (validation != null || amt == null) {
+            error = validation ?: "Enter a valid amount"
+            return
+        }
+        error = null
+        busy = true
+        scope.launch {
+            val createdAt = dateTime.atZone(ZoneId.systemDefault()).toInstant().toString()
+            val res = repo.createTransaction(
+                CreateTransactionRequest(
+                    accountId = accountId,
+                    type = type,
+                    amount = amt,
+                    name = name.ifBlank { null },
+                    description = null,
+                    category = category.ifBlank { null },
+                    payee = payee.ifBlank { null },
+                    toAccountId = toAccountId.ifBlank { null }.takeIf { isTransfer },
+                    exchangeRate = exchangeRate.replace(',', '.').toDoubleOrNull()?.takeIf { isTransfer },
+                    createdAt = createdAt
+                )
+            )
+            busy = false
+            when (res) {
+                is ApiResult.Ok -> {
+                    amount = ""
+                    name = ""
+                    category = ""
+                    payee = ""
+                    exchangeRate = ""
+                    dateTime = LocalDateTime.now()
+                    onSaved()
                 }
+                is ApiResult.Err -> error = res.message
             }
+        }
+    }
 
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            TYPES.forEachIndexed { i, t ->
+                SegmentedButton(
+                    selected = typeIndex == i,
+                    onClick = { typeIndex = i },
+                    shape = SegmentedButtonDefaults.itemShape(i, TYPES.size)
+                ) { Text(t.replaceFirstChar { c -> c.uppercase() }) }
+            }
+        }
+
+        AccountDropdown("Account", accounts, accountId, onPick = {
+            accountId = it
+            if (toAccountId == it) toAccountId = accounts.firstOrNull { a -> a.id != it }?.id ?: ""
+        })
+        if (isTransfer) {
+            AccountDropdown(
+                "To account",
+                accounts.filter { it.id != accountId },
+                toAccountId,
+                onPick = { toAccountId = it }
+            )
+        }
+
+        OutlinedTextField(
+            value = amount,
+            onValueChange = { amount = it },
+            label = { Text("Amount") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Name (optional)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(
-                value = amount, onValueChange = { amount = it },
-                label = { Text("Amount") }, singleLine = true,
+                value = category,
+                onValueChange = { category = it },
+                label = { Text("Category") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = payee,
+                onValueChange = { payee = it },
+                label = { Text("Payee") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (isTransfer) {
+            OutlinedTextField(
+                value = exchangeRate,
+                onValueChange = { exchangeRate = it },
+                label = { Text("Exchange rate (only if currencies differ)") },
+                singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 modifier = Modifier.fillMaxWidth()
             )
-            OutlinedTextField(
-                value = name, onValueChange = { name = it },
-                label = { Text("Name (optional)") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = category, onValueChange = { category = it },
-                label = { Text("Category (optional)") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = payee, onValueChange = { payee = it },
-                label = { Text("Payee (optional)") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+        }
 
-            if (isTransfer) {
-                AccountDropdown(
-                    "To account",
-                    accounts.filter { it.id != accountId },
-                    toAccountId,
-                    onPick = { toAccountId = it }
-                )
-                OutlinedTextField(
-                    value = exchangeRate, onValueChange = { exchangeRate = it },
-                    label = { Text("Exchange rate (only if currencies differ)") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AssistChip(
+                onClick = { showDate = true },
+                label = { Text(dateTime.format(DATE_FORMAT)) },
+                leadingIcon = { Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp)) }
+            )
+            AssistChip(
+                onClick = { showTime = true },
+                label = { Text(dateTime.format(TIME_FORMAT)) },
+                leadingIcon = { Icon(Icons.Filled.Schedule, contentDescription = null, modifier = Modifier.size(18.dp)) }
+            )
+        }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { showDate = true }) {
-                    Text(dateTime.format(DateTimeFormatter.ofPattern("d MMM yyyy")))
-                }
-                TextButton(onClick = { showTime = true }) {
-                    Text(dateTime.format(DateTimeFormatter.ofPattern("HH:mm")))
-                }
-            }
-
-            Spacer(Modifier.height(4.dp))
-            Button(
-                onClick = {
-                    val amt = amount.replace(',', '.').toDoubleOrNull()
-                    if (accountId.isBlank()) {
-                        scope.launch { snackbar.showSnackbar("Pick an account") }; return@Button
-                    }
-                    if (amt == null || amt <= 0) {
-                        scope.launch { snackbar.showSnackbar("Enter a valid amount") }; return@Button
-                    }
-                    if (isTransfer && toAccountId.isBlank() &&
-                        accounts.none { it.id != accountId }
-                    ) {
-                        scope.launch { snackbar.showSnackbar("Pick a destination account") }; return@Button
-                    }
-                    busy = true
-                    scope.launch {
-                        val createdAt = dateTime.toInstant(ZoneOffset.systemDefault().rules.getOffset(Instant.now())).toString()
-                        val res = repo.createTransaction(
-                            CreateTransactionRequest(
-                                accountId = accountId,
-                                type = type,
-                                amount = amt,
-                                name = name.ifBlank { null },
-                                description = null,
-                                category = category.ifBlank { null },
-                                payee = payee.ifBlank { null },
-                                toAccountId = toAccountId.ifBlank {
-                                    accounts.firstOrNull { it.id != accountId }?.id
-                                }.takeIf { isTransfer },
-                                exchangeRate = exchangeRate.replace(',', '.').toDoubleOrNull()?.takeIf { isTransfer },
-                                createdAt = createdAt
-                            )
-                        )
-                        busy = false
-                        when (res) {
-                            is ApiResult.Ok -> onSaved()
-                            is ApiResult.Err -> snackbar.showSnackbar(res.message)
-                        }
-                    }
-                },
-                enabled = !busy,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                if (busy) CircularProgressIndicator(strokeWidth = 2.dp)
-                else Text("Save")
+        error?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Button(
+            onClick = { save() },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (busy) {
+                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+            } else {
+                Text("Add transaction")
             }
         }
     }
@@ -238,7 +291,7 @@ fun TxnFormScreen(
     if (showTime) {
         val tp = rememberTimePickerState(dateTime.hour, dateTime.minute, true)
         Dialog(onDismissRequest = { showTime = false }) {
-            androidx.compose.material3.Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)) {
+            Surface(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     TimePicker(tp)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {

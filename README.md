@@ -6,15 +6,24 @@ dynamic colors. minSdk 35 (Android 15), targetSdk 36 (Android 16).
 ## Features
 
 - Sign in against the backend (`POST /api/auth/login`, session cookie stored locally)
-- Dashboard: net-worth card with 30-day trend graph, month navigation,
-  per-account balances, recent transactions (all from `GET /api/accounts/detailed`
-  + `GET /api/accounts/net-worth`)
-- New-transaction form: expense / income / transfer, optional category/payee,
-  date+time pickers (`POST /api/transactions`)
+- Dashboard, mirroring the web main page (no budgets):
+  - Month navigation
+  - Stat cards: current balance, projected balance, income, expenses, savings rate
+  - Inline new-transaction form: expense / income / transfer, account, amount,
+    name, category, payee, date and time (`POST /api/transactions`)
+  - Balance overview: end-of-day balance per account across the month
+    (`chartData` from `GET /api/accounts/detailed`)
+  - Recent transactions grouped by day with daily spend, search, category filter,
+    and upcoming transactions (`GET /api/transactions`)
+  - Savings goal card for the account that has a goal
 - Settings: server URL, widget account picker, sign out
 - Home-screen widget: shows the selected account's balance, tap opens the
   new-transaction form (`vibefinancer://new-transaction?accountId=…`),
   Refresh button re-fetches the balance
+
+Colors come from the Material You scheme, so the app re-themes with the wallpaper.
+
+See [AGENTS.md](AGENTS.md) for the emulator workflow and project notes.
 
 ## Backend
 

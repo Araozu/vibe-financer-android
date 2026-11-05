@@ -105,17 +105,8 @@ class MainActivity : ComponentActivity() {
                     })
                     Screen.Dashboard -> DashboardScreen(
                         state = dashState,
-                        onAddTransaction = { screen = Screen.Form(it) },
+                        repo = repo,
                         onOpenSettings = { screen = Screen.Settings },
-                        onPickWidgetAccount = { acc ->
-                            scope.launch {
-                                store.setWidgetAccountId(acc.id)
-                                BalanceWidget.refreshWithBalance(
-                                    context, acc.name, acc.currentBalance,
-                                    acc.currencySymbol ?: acc.currencyCode ?: ""
-                                )
-                            }
-                        },
                         onSessionExpired = {
                             scope.launch { repo.logout(); screen = Screen.Login }
                         }
