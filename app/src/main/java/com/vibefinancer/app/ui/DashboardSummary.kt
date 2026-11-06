@@ -36,11 +36,11 @@ fun summarize(
     accounts: List<DetailedAccountDto>,
     transactions: List<TransactionDto>,
     now: Instant,
-    isCurrentMonth: Boolean
+    isCurrentMonth: Boolean,
+    defaultAccountId: String? = null
 ): DashboardSummary {
     val (upcoming, posted) = transactions.partition { txInstant(it).isAfter(now) }
     val pending = if (isCurrentMonth) upcoming else emptyList()
-    val stats = if (isCurrentMonth) posted else transactions
     // Accumulate pending deltas per account in one pass instead of re-summing
     // per account (O(accounts × transactions)). The widget's main account
     // carries the most movements, so this is the hot path.
@@ -64,11 +64,23 @@ fun summarize(
     val accountBalances = accounts.associate { acc ->
         acc.id to (acc.currentBalance - (pendingDelta[acc.id] ?: 0))
     }
+    // Mirror the web dashboard: summary stats are scoped to the default
+    // (primary) account, not summed across all accounts.
+    val resolvedDefaultId = defaultAccountId ?: accounts.firstOrNull()?.id
+    val defaultAccount = accounts.firstOrNull { it.id == resolvedDefaultId }
+    val defaultTx = if (resolvedDefaultId == null) emptyList() else transactions.filter {
+        it.accountId == resolvedDefaultId || it.toAccountId == resolvedDefaultId
+    }
+    val (defaultUpcoming, defaultPosted) = defaultTx.partition { txInstant(it).isAfter(now) }
+    val stats = if (isCurrentMonth) defaultPosted else defaultTx
+    // Suppress unused warning when callers pass only posted data.
+    @Suppress("UNUSED_VARIABLE")
+    val ignoredUpcoming = defaultUpcoming
     return DashboardSummary(
-        currentBalance = accountBalances.values.sum(),
-        projectedBalance = accounts.sumOf { it.currentBalance },
-        income = stats.filter { it.type == "income" }.sumOf { it.amount },
-        expenses = stats.filter { it.type == "expense" }.sumOf { it.amount },
+        currentBalance = resolvedDefaultId?.let { accountBalances[it] } ?: 0,
+        projectedBalance = defaultAccount?.currentBalance ?: 0,
+        income = stats.filter { it.type == "income" && it.accountId == resolvedDefaultId }.sumOf { it.amount },
+        expenses = stats.filter { it.type == "expense" && it.accountId == resolvedDefaultId }.sumOf { it.amount },
         accountBalances = accountBalances
     )
 }

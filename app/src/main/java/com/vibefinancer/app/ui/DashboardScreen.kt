@@ -92,7 +92,9 @@ data class DashboardData(
     /** Every transaction in the selected month, across accounts. */
     val transactions: List<TransactionDto> = emptyList(),
     val loading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    /** True when any fetch failed with 401: the session is dead, log out. */
+    val unauthorized: Boolean = false
 )
 
 class DashboardState(private val repo: FinancerRepository) {
@@ -107,21 +109,39 @@ class DashboardState(private val repo: FinancerRepository) {
     private val _year = MutableStateFlow(Calendar.getInstance().get(Calendar.YEAR))
     val year: StateFlow<Int> = _year.asStateFlow()
 
+    private val _defaultAccountId = MutableStateFlow<String?>(null)
+    val defaultAccountId: StateFlow<String?> = _defaultAccountId.asStateFlow()
+
     suspend fun load() {
-        _data.value = _data.value.copy(loading = true, error = null)
+        _data.value = _data.value.copy(loading = true, error = null, unauthorized = false)
         val m = _month.value
         val y = _year.value
         val tz = TimeZone.getDefault().id
-        // The two reads are independent: run them in parallel to halve latency.
+        // The three reads are independent: run them in parallel to halve latency.
         val detailedDeferred = loadScope.async { repo.detailedAccounts(m, y) }
         val monthTxDeferred = loadScope.async { repo.monthTransactions(m, y, tz) }
+        val userDeferred = loadScope.async { repo.me() }
         val detailed = detailedDeferred.await()
         val monthTx = monthTxDeferred.await()
+        val user = userDeferred.await()
+        when (user) {
+            is ApiResult.Ok -> _defaultAccountId.value = user.value.defaultAccountId
+            // Any 401 means the session is dead even if the other calls
+            // succeeded: don't strand the user on an empty dashboard.
+            is ApiResult.Err -> if (user.unauthorized) {
+                _data.value = DashboardData(error = user.message, unauthorized = true)
+                return
+            } else Unit
+        }
         _data.value = when (detailed) {
-            is ApiResult.Err -> DashboardData(error = detailed.message)
+            is ApiResult.Err -> DashboardData(error = detailed.message, unauthorized = detailed.unauthorized)
             is ApiResult.Ok -> when (monthTx) {
                 is ApiResult.Ok -> DashboardData(accounts = detailed.value, transactions = monthTx.value.transactions)
-                is ApiResult.Err -> DashboardData(accounts = detailed.value, error = monthTx.message)
+                is ApiResult.Err -> DashboardData(
+                    accounts = detailed.value,
+                    error = monthTx.message,
+                    unauthorized = monthTx.unauthorized
+                )
             }
         }
     }
@@ -169,7 +189,11 @@ fun DashboardScreen(
     fun reload() = scope.launch {
         now = Instant.now()
         state.load()
-        state.data.value.error?.let { snackbar.showSnackbar(it) }
+        val snapshot = state.data.value
+        // Don't snackbar on 401: we're leaving for the login screen.
+        if (!snapshot.unauthorized) {
+            snapshot.error?.let { snackbar.showSnackbar(it) }
+        }
     }
 
     LaunchedEffect(month, year) { reload() }
@@ -179,24 +203,28 @@ fun DashboardScreen(
             now = Instant.now()
         }
     }
-    LaunchedEffect(data.error) {
-        if (data.error?.contains("Unauthorized", ignoreCase = true) == true) onSessionExpired()
+    LaunchedEffect(data.unauthorized, data.error) {
+        if (data.unauthorized ||
+            data.error?.contains("Unauthorized", ignoreCase = true) == true
+        ) onSessionExpired()
     }
 
     val today = LocalDate.now()
     val isCurrentMonth = today.year == year && today.monthValue - 1 == month
     val monthName = monthLabel(month, year).substringBefore(" ")
     val periodLabel = if (isCurrentMonth) "${monthName.take(3)} 1 – today" else "All of $monthName"
-    val summary = remember(data.accounts, data.transactions, now, isCurrentMonth) {
-        summarize(data.accounts, data.transactions, now, isCurrentMonth)
+    val defaultAccountId by state.defaultAccountId.collectAsState()
+    val summary = remember(data.accounts, data.transactions, now, isCurrentMonth, defaultAccountId) {
+        summarize(data.accounts, data.transactions, now, isCurrentMonth, defaultAccountId)
     }
-    val primary = data.accounts.firstOrNull()
-    fun money(cents: Int): String = formatMoney(cents, primary?.currencyCode, primary?.currencySymbol)
+    val defaultAccount = data.accounts.firstOrNull { it.id == defaultAccountId }
+        ?: data.accounts.firstOrNull()
+    fun money(cents: Int): String = formatMoney(cents, defaultAccount?.currencyCode, defaultAccount?.currencySymbol)
     val savingsSubtitle = if (summary.income > 0) "Of income kept this month" else "No income yet"
     val stats = listOf(
         StatItem(
             "Current balance", money(summary.currentBalance),
-            "Across ${data.accounts.size} ${if (data.accounts.size == 1) "account" else "accounts"}",
+            defaultAccount?.name ?: "No default account",
             Icons.Filled.AccountBalanceWallet, MaterialTheme.colorScheme.primary
         ),
         StatItem(
@@ -262,7 +290,7 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         BalanceOverviewChart(data.accounts)
-                        AccountLegend(data.accounts)
+                        AccountLegend(data.accounts, summary.accountBalances)
                     }
                 }
             }

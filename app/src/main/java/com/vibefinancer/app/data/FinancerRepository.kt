@@ -73,6 +73,15 @@ class FinancerRepository(private val store: SessionStore) {
             try {
                 ApiResult.Ok(api().block())
             } catch (e: HttpException) {
+                if (e.code() == 401) {
+                    // Stale session (e.g. DB was restored and the token is gone).
+                    // Surface it as expired so the UI logs out instead of
+                    // showing an empty dashboard with zeros.
+                    return@withContext ApiResult.Err(
+                        "Session expired. Please sign in again.",
+                        unauthorized = true
+                    )
+                }
                 val msg = try {
                     e.response()?.errorBody()?.string()?.let {
                         runCatching { json.decodeFromString<ErrorResponse>(it).error }.getOrNull()
@@ -118,6 +127,9 @@ class FinancerRepository(private val store: SessionStore) {
 
     suspend fun monthTransactions(month: Int, year: Int, tz: String, limit: Int? = null) =
         call { monthTransactions(month, year, tz, limit) }
+
+    suspend fun me() =
+        call { me() }
 
     suspend fun netWorthTrend(startIso: String, endIso: String, interval: Int = 1) =
         call { netWorth(startIso, endIso, interval) }

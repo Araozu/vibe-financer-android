@@ -105,7 +105,7 @@ fun BalanceOverviewChart(accounts: List<DetailedAccountDto>, modifier: Modifier 
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AccountLegend(accounts: List<DetailedAccountDto>) {
+fun AccountLegend(accounts: List<DetailedAccountDto>, balances: Map<String, Int> = emptyMap()) {
     val fallback = MaterialTheme.colorScheme.primary
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -121,7 +121,7 @@ fun AccountLegend(accounts: List<DetailedAccountDto>) {
                 Box(Modifier.size(8.dp).background(accountColor(acc.color, fallback), CircleShape))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "${acc.name} · ${formatMoney(acc.currentBalance, acc.currencyCode, acc.currencySymbol)}",
+                    "${acc.name} · ${formatMoney(balances[acc.id] ?: acc.currentBalance, acc.currencyCode, acc.currencySymbol)}",
                     style = MaterialTheme.typography.labelMedium
                 )
             }
