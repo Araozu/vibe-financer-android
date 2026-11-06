@@ -79,6 +79,7 @@ private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm"
 fun TxnFormScreen(
     repo: FinancerRepository,
     accounts: List<DetailedAccountDto>,
+    balances: Map<String, Int> = emptyMap(),
     initialAccountId: String?,
     onSaved: () -> Unit,
     onBack: () -> Unit
@@ -101,7 +102,14 @@ fun TxnFormScreen(
             // Fresh form state per target account: warm widget taps for another
             // account must not reuse the previous account's half-filled form.
             androidx.compose.runtime.key(initialAccountId) {
-                TransactionForm(repo, accounts, initialAccountId, onSaved, autofocusAmount = true)
+                TransactionForm(
+                    repo,
+                    accounts,
+                    balances,
+                    initialAccountId = initialAccountId,
+                    onSaved = onSaved,
+                    autofocusAmount = true
+                )
             }
         }
     }
@@ -112,6 +120,7 @@ fun TxnFormScreen(
 fun TransactionForm(
     repo: FinancerRepository,
     accounts: List<DetailedAccountDto>,
+    balances: Map<String, Int> = emptyMap(),
     initialAccountId: String?,
     onSaved: () -> Unit,
     modifier: Modifier = Modifier,
@@ -163,9 +172,10 @@ fun TransactionForm(
 
     // Balance labels are memoized: NumberFormat construction per account per
     // keystroke was the main source of typing jank in this form.
-    val accountLabels = remember(accounts) {
+    // Balances come from the server summary (as-of-now), same as web + dashboard.
+    val accountLabels = remember(accounts, balances) {
         accounts.associate { acc ->
-            acc.id to "${acc.name} · ${formatMoney(acc.currentBalance, acc.currencyCode, acc.currencySymbol)}"
+            acc.id to "${acc.name} · ${formatMoney(balances[acc.id] ?: acc.currentBalance, acc.currencyCode, acc.currencySymbol)}"
         }
     }
     val toAccounts = remember(accounts, accountId) {

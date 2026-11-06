@@ -46,6 +46,7 @@ fun SettingsScreen(
     repo: FinancerRepository,
     store: SessionStore,
     accounts: List<DetailedAccountDto>,
+    balances: Map<String, Int> = emptyMap(),
     onBack: () -> Unit,
     onLoggedOut: () -> Unit
 ) {
@@ -121,7 +122,7 @@ fun SettingsScreen(
                                     store.setWidgetCacheV2(
                                         acc.id,
                                         acc.name,
-                                        acc.currentBalance,
+                                        balances[acc.id] ?: acc.currentBalance,
                                         acc.currencySymbol ?: acc.currencyCode ?: ""
                                     )
                                     com.vibefinancer.app.widget.BalanceWidget.refresh(context)

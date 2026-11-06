@@ -86,6 +86,21 @@ data class MonthTransactionsResponse(
     val initialBalances: Map<String, Int> = emptyMap()
 )
 
+/** Server-computed dashboard balances: single source of truth for web + mobile. */
+@Serializable
+data class DashboardSummaryDto(
+    val defaultAccountId: String? = null,
+    /** Cents, default account, as of now. */
+    val currentBalance: Int = 0,
+    /** Cents, default account, end of the selected month. */
+    val projectedBalance: Int = 0,
+    val income: Int = 0,
+    val expenses: Int = 0,
+    /** Cents, as of now, keyed by account id. */
+    val accountBalances: Map<String, Int> = emptyMap(),
+    val asOf: String = ""
+)
+
 @Serializable
 data class NetWorthAccountDto(
     val accountId: String,

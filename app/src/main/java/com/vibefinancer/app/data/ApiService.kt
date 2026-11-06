@@ -21,6 +21,13 @@ interface ApiService {
         @Query("year") year: Int
     ): List<DetailedAccountDto>
 
+    @GET("api/dashboard/summary")
+    suspend fun dashboardSummary(
+        @Query("month") month: Int,
+        @Query("year") year: Int,
+        @Query("tz") tz: String
+    ): DashboardSummaryDto
+
     @GET("api/transactions")
     suspend fun monthTransactions(
         @Query("month") month: Int,

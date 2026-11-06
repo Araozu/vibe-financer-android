@@ -128,6 +128,9 @@ class FinancerRepository(private val store: SessionStore) {
     suspend fun monthTransactions(month: Int, year: Int, tz: String, limit: Int? = null) =
         call { monthTransactions(month, year, tz, limit) }
 
+    suspend fun dashboardSummary(month: Int, year: Int, tz: String) =
+        call { dashboardSummary(month, year, tz) }
+
     suspend fun me() =
         call { me() }
 

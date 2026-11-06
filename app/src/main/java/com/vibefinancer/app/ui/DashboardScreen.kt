@@ -66,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vibefinancer.app.data.ApiResult
+import com.vibefinancer.app.data.DashboardSummaryDto
 import com.vibefinancer.app.data.DetailedAccountDto
 import com.vibefinancer.app.data.FinancerRepository
 import com.vibefinancer.app.data.TransactionDto
@@ -91,6 +92,8 @@ data class DashboardData(
     val accounts: List<DetailedAccountDto> = emptyList(),
     /** Every transaction in the selected month, across accounts. */
     val transactions: List<TransactionDto> = emptyList(),
+    /** Server-computed balances (single source of truth, shared with web). */
+    val summary: DashboardSummaryDto? = null,
     val loading: Boolean = false,
     val error: String? = null,
     /** True when any fetch failed with 401: the session is dead, log out. */
@@ -109,9 +112,6 @@ class DashboardState(private val repo: FinancerRepository) {
     private val _year = MutableStateFlow(Calendar.getInstance().get(Calendar.YEAR))
     val year: StateFlow<Int> = _year.asStateFlow()
 
-    private val _defaultAccountId = MutableStateFlow<String?>(null)
-    val defaultAccountId: StateFlow<String?> = _defaultAccountId.asStateFlow()
-
     suspend fun load() {
         _data.value = _data.value.copy(loading = true, error = null, unauthorized = false)
         val m = _month.value
@@ -120,27 +120,34 @@ class DashboardState(private val repo: FinancerRepository) {
         // The three reads are independent: run them in parallel to halve latency.
         val detailedDeferred = loadScope.async { repo.detailedAccounts(m, y) }
         val monthTxDeferred = loadScope.async { repo.monthTransactions(m, y, tz) }
-        val userDeferred = loadScope.async { repo.me() }
+        val summaryDeferred = loadScope.async { repo.dashboardSummary(m, y, tz) }
         val detailed = detailedDeferred.await()
         val monthTx = monthTxDeferred.await()
-        val user = userDeferred.await()
-        when (user) {
-            is ApiResult.Ok -> _defaultAccountId.value = user.value.defaultAccountId
-            // Any 401 means the session is dead even if the other calls
-            // succeeded: don't strand the user on an empty dashboard.
-            is ApiResult.Err -> if (user.unauthorized) {
-                _data.value = DashboardData(error = user.message, unauthorized = true)
-                return
-            } else Unit
+        val summary = summaryDeferred.await()
+        // Any 401 means the session is dead even if the other calls
+        // succeeded: don't strand the user on an empty dashboard.
+        if (summary is ApiResult.Err && summary.unauthorized) {
+            _data.value = DashboardData(error = summary.message, unauthorized = true)
+            return
         }
+        val summaryDto = (summary as? ApiResult.Ok)?.value
         _data.value = when (detailed) {
-            is ApiResult.Err -> DashboardData(error = detailed.message, unauthorized = detailed.unauthorized)
+            is ApiResult.Err -> DashboardData(
+                error = detailed.message,
+                unauthorized = detailed.unauthorized,
+                summary = summaryDto
+            )
             is ApiResult.Ok -> when (monthTx) {
-                is ApiResult.Ok -> DashboardData(accounts = detailed.value, transactions = monthTx.value.transactions)
+                is ApiResult.Ok -> DashboardData(
+                    accounts = detailed.value,
+                    transactions = monthTx.value.transactions,
+                    summary = summaryDto
+                )
                 is ApiResult.Err -> DashboardData(
                     accounts = detailed.value,
                     error = monthTx.message,
-                    unauthorized = monthTx.unauthorized
+                    unauthorized = monthTx.unauthorized,
+                    summary = summaryDto
                 )
             }
         }
@@ -213,34 +220,42 @@ fun DashboardScreen(
     val isCurrentMonth = today.year == year && today.monthValue - 1 == month
     val monthName = monthLabel(month, year).substringBefore(" ")
     val periodLabel = if (isCurrentMonth) "${monthName.take(3)} 1 – today" else "All of $monthName"
-    val defaultAccountId by state.defaultAccountId.collectAsState()
-    val summary = remember(data.accounts, data.transactions, now, isCurrentMonth, defaultAccountId) {
-        summarize(data.accounts, data.transactions, now, isCurrentMonth, defaultAccountId)
-    }
+    // All balance numbers come from the server (/api/dashboard/summary).
+    // The client only formats and displays them.
+    val summary = data.summary
+    val defaultAccountId = summary?.defaultAccountId
+    val accountBalances = summary?.accountBalances ?: emptyMap()
+    val currentBalance = summary?.currentBalance ?: 0
+    val projectedBalance = summary?.projectedBalance ?: 0
+    val income = summary?.income ?: 0
+    val expenses = summary?.expenses ?: 0
+    val savingsRate = if (income > 0) (income - expenses) * 100.0 / income else 0.0
     val defaultAccount = data.accounts.firstOrNull { it.id == defaultAccountId }
-        ?: data.accounts.firstOrNull()
-    fun money(cents: Int): String = formatMoney(cents, defaultAccount?.currencyCode, defaultAccount?.currencySymbol)
-    val savingsSubtitle = if (summary.income > 0) "Of income kept this month" else "No income yet"
+    fun money(cents: Int): String {
+        val fmt = defaultAccount ?: data.accounts.firstOrNull()
+        return formatMoney(cents, fmt?.currencyCode, fmt?.currencySymbol)
+    }
+    val savingsSubtitle = if (income > 0) "Of income kept this month" else "No income yet"
     val stats = listOf(
         StatItem(
-            "Current balance", money(summary.currentBalance),
+            "Current balance", money(currentBalance),
             defaultAccount?.name ?: "No default account",
             Icons.Filled.AccountBalanceWallet, MaterialTheme.colorScheme.primary
         ),
         StatItem(
-            "Projected balance", money(summary.projectedBalance),
+            "Projected balance", money(projectedBalance),
             "End of $monthName · incl. upcoming",
             Icons.Filled.Event, MaterialTheme.colorScheme.tertiary
         ),
-        StatItem("Income", money(summary.income), periodLabel, Icons.Filled.TrendingUp, incomeColor()),
+        StatItem("Income", money(income), periodLabel, Icons.Filled.TrendingUp, incomeColor()),
         StatItem(
-            "Expenses", money(summary.expenses), periodLabel,
+            "Expenses", money(expenses), periodLabel,
             Icons.Filled.TrendingDown, MaterialTheme.colorScheme.error
         ),
         StatItem(
-            "Savings rate", "%.1f%%".format(summary.savingsRate), savingsSubtitle,
+            "Savings rate", "%.1f%%".format(savingsRate), savingsSubtitle,
             Icons.Filled.Savings, MaterialTheme.colorScheme.secondary,
-            if (summary.savingsRate < 0) MaterialTheme.colorScheme.error else Color.Unspecified
+            if (savingsRate < 0) MaterialTheme.colorScheme.error else Color.Unspecified
         )
     )
 
@@ -278,7 +293,7 @@ fun DashboardScreen(
                 StatGrid(stats)
             }
             item {
-                NewTransactionCard(repo, data.accounts, onSaved = { reload() })
+                NewTransactionCard(repo, data.accounts, accountBalances, onSaved = { reload() })
             }
             item {
                 OutlinedCard(Modifier.fillMaxWidth()) {
@@ -290,7 +305,7 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         BalanceOverviewChart(data.accounts)
-                        AccountLegend(data.accounts, summary.accountBalances)
+                        AccountLegend(data.accounts, accountBalances)
                     }
                 }
             }
@@ -303,7 +318,7 @@ fun DashboardScreen(
                 )
             }
             item {
-                SavingsGoalCard(data.accounts, summary.accountBalances)
+                SavingsGoalCard(data.accounts, accountBalances)
             }
         }
     }
@@ -383,6 +398,7 @@ private fun StatCard(item: StatItem, modifier: Modifier) {
 private fun NewTransactionCard(
     repo: FinancerRepository,
     accounts: List<DetailedAccountDto>,
+    balances: Map<String, Int>,
     onSaved: () -> Unit
 ) {
     OutlinedCard(Modifier.fillMaxWidth()) {
@@ -395,7 +411,7 @@ private fun NewTransactionCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                TransactionForm(repo, accounts, initialAccountId = null, onSaved = onSaved)
+                TransactionForm(repo, accounts, balances, initialAccountId = null, onSaved = onSaved)
             }
         }
     }

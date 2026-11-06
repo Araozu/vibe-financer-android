@@ -68,8 +68,10 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Keep the widget cache in sync with fresh dashboard data.
+                // Balances come from the server summary (as-of-now), same as web.
                 val accounts = dashData.accounts
-                LaunchedEffect(accounts) {
+                val serverBalances = dashData.summary?.accountBalances ?: emptyMap()
+                LaunchedEffect(accounts, serverBalances) {
                     if (accounts.isNotEmpty()) {
                         val snap = store.snapshot()
                         val wanted = snap.widgetAccountId
@@ -82,7 +84,7 @@ class MainActivity : ComponentActivity() {
                                 context,
                                 acc.id,
                                 acc.name,
-                                acc.currentBalance,
+                                serverBalances[acc.id] ?: acc.currentBalance,
                                 acc.currencySymbol ?: acc.currencyCode ?: ""
                             )
                         }
@@ -116,6 +118,7 @@ class MainActivity : ComponentActivity() {
                     is Screen.Form -> TxnFormScreen(
                         repo = repo,
                         accounts = dashData.accounts,
+                        balances = dashData.summary?.accountBalances ?: emptyMap(),
                         initialAccountId = s.accountId,
                         onSaved = {
                             scope.launch { dashState.load() }
@@ -127,6 +130,7 @@ class MainActivity : ComponentActivity() {
                         repo = repo,
                         store = store,
                         accounts = dashData.accounts,
+                        balances = dashData.summary?.accountBalances ?: emptyMap(),
                         onBack = { screen = Screen.Dashboard },
                         onLoggedOut = { screen = Screen.Login }
                     )
